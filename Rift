@@ -1,0 +1,233 @@
+-- Rift
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
+local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
+
+-- Services
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local PetServiceRF = ReplicatedStorage.Packages.Knit.Services.PetService.RF:FindFirstChild("getOwned")
+local RiftMachineService = ReplicatedStorage.Packages.Knit.Services.RiftMachineService.RF
+
+-- Variables
+local ownedPetData = {}
+local uniquePetNames = {}
+local selectedPetName = nil
+local selectedEnchants = {}
+local slotPets = {[1] = nil, [2] = nil, [3] = nil}
+local processedPets = {}
+local completedPets = {}
+
+-- Helper Functions
+local function fetchOwnedPets()
+    if not PetServiceRF then return false end
+    
+    local success, petData = pcall(function()
+        return PetServiceRF:InvokeServer()
+    end)
+
+    if success and petData then
+        ownedPetData = {}
+        uniquePetNames = {}
+        
+        for petId, petInfo in pairs(petData) do
+            if not petInfo.Locked then
+                local displayName = petInfo.DisplayName or "Unknown"
+                if not ownedPetData[displayName] then
+                    ownedPetData[displayName] = {}
+                    table.insert(uniquePetNames, displayName)
+                end
+                table.insert(ownedPetData[displayName], {
+                    Id = petId,
+                    Enchantment = petInfo.Enchantment
+                })
+            end
+        end
+        table.sort(uniquePetNames)
+        return true
+    end
+    return false
+end
+
+-- Check if pet has target enchant
+local function hasTargetEnchant(petInfo, targetEnchant)
+    if not petInfo.Enchantment then return false end
+    return petInfo.Enchantment.Display == targetEnchant
+end
+
+-- Check current enchant of a pet
+local function checkPetEnchant(petId)
+    local success, petData = pcall(function()
+        return PetServiceRF:InvokeServer()
+    end)
+    
+    if success and petData and petData[petId] then
+        return petData[petId].Enchantment and petData[petId].Enchantment.Display or "No Enchant"
+    end
+    return nil
+end
+
+-- Window Setup
+local Window = Fluent:CreateWindow({
+    Title = "Rift Enchant",
+    SubTitle = "By Big Bean",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(580, 460),
+    Acrylic = true,
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.LeftControl,
+})
+
+local Tabs = {
+    Main = Window:AddTab({ Title = "Rift Enchant", Icon = "star" })
+}
+
+-- UI Elements
+local PetDropdown = Tabs.Main:AddDropdown("PetDropdown", {
+    Title = "Select Pet",
+    Description = "Choose a specific unlocked pet name.",
+    Values = uniquePetNames,
+    Multi = false,
+})
+
+local EnchantDropdown = Tabs.Main:AddDropdown("EnchantDropdown", {
+    Title = "Select Enchant(s)",
+    Description = "Choose enchant levels to apply.",
+    Values = { "Rifted I", "Rifted II", "Rifted III", "Rifted IV" },
+    Multi = true,
+    Default = {},
+})
+
+local AutoEnchantToggle = Tabs.Main:AddToggle("AutoEnchantToggle", {
+    Title = "Auto Enchant (Selected)",
+    Description = "Automatically enchant pets to selected level",
+    Default = false
+})
+
+-- Event Handlers
+PetDropdown:OnChanged(function(value)
+    selectedPetName = value
+    completedPets = {}
+    if selectedPetName then
+        print("\n[SELECTED] Pet:", selectedPetName)
+        local petInstances = ownedPetData[selectedPetName] or {}
+        for _, petInfo in ipairs(petInstances) do
+            local enchant = petInfo.Enchantment and petInfo.Enchantment.Display or "No Enchant"
+            print(string.format("[PET] ID: %s | Enchant: %s", petInfo.Id, enchant))
+        end
+    end
+end)
+
+EnchantDropdown:OnChanged(function(value)
+    selectedEnchants = {}
+    completedPets = {}
+    for enchant, isSelected in pairs(value) do
+        if isSelected then
+            table.insert(selectedEnchants, enchant)
+        end
+    end
+    if #selectedEnchants > 0 then
+        print("\n[TARGET] Enchant:", table.concat(selectedEnchants, ", "))
+    end
+end)
+
+AutoEnchantToggle:OnChanged(function(value)
+    if value then
+        print("\n[AUTO ENCHANT] Started")
+        spawn(function()
+            while AutoEnchantToggle.Value do
+                if selectedPetName and #selectedEnchants > 0 then
+                    local petInstances = ownedPetData[selectedPetName] or {}
+                    local targetEnchant = selectedEnchants[1]
+                    
+                    -- Fill empty slots
+                    for slot = 1, 3 do
+                        if not slotPets[slot] then
+                            for _, petInfo in ipairs(petInstances) do
+                                -- Skip if pet already has target enchant or is completed
+                                if hasTargetEnchant(petInfo, targetEnchant) or completedPets[petInfo.Id] then
+                                    if not processedPets[petInfo.Id] then
+                                        print(string.format("[SKIP] Pet ID: %s already has enchant: %s", 
+                                            petInfo.Id, targetEnchant))
+                                        processedPets[petInfo.Id] = true
+                                    end
+                                    continue
+                                end
+                                
+                                if not processedPets[petInfo.Id] and not table.find(slotPets, petInfo.Id) then
+                                    print(string.format("\n[SLOT %d] Adding pet ID: %s", slot, petInfo.Id))
+                                    RiftMachineService.AddSlot:InvokeServer(tostring(slot), petInfo.Id)
+                                    slotPets[slot] = petInfo.Id
+                                    break
+                                end
+                            end
+                        end
+                    end
+                    
+                    if slotPets[1] or slotPets[2] or slotPets[3] then
+                        print("\n[WAITING] 910 seconds...")
+                        wait(910)
+                        
+                        -- Claim slots and verify enchants
+                        for slot = 1, 3 do
+                            if slotPets[slot] then
+                                local petId = slotPets[slot]
+                                print(string.format("\n[CLAIMING] Slot %d | Pet ID: %s", slot, petId))
+                                RiftMachineService.Claim:InvokeServer(tostring(slot))
+                                
+                                -- Verify new enchant
+                                wait(1)
+                                local newEnchant = checkPetEnchant(petId)
+                                print(string.format("[VERIFY] Pet ID: %s | New Enchant: %s", petId, newEnchant))
+                                
+                                if newEnchant == targetEnchant then
+                                    print(string.format("[SUCCESS] Pet ID: %s reached target enchant!", petId))
+                                    completedPets[petId] = true
+                                else
+                                    print(string.format("[RETRY] Pet ID: %s will be re-enchanted", petId))
+                                end
+                                
+                                processedPets[petId] = true
+                                slotPets[slot] = nil
+                            end
+                        end
+                        
+                        fetchOwnedPets()
+                    else
+                        -- Check if we need to reset processed pets to retry remaining ones
+                        local allCompleted = true
+                        for _, petInfo in ipairs(petInstances) do
+                            if not completedPets[petInfo.Id] and not hasTargetEnchant(petInfo, targetEnchant) then
+                                allCompleted = false
+                                break
+                            end
+                        end
+                        
+                        if allCompleted then
+                            print("\n[COMPLETE] All pets have reached target enchant: " .. targetEnchant)
+                            AutoEnchantToggle:Set(false)
+                            break
+                        else
+                            print("\n[RESET] Resetting processed pets to retry remaining pets")
+                            processedPets = {}
+                        end
+                    end
+                end
+                wait(1)
+            end
+        end)
+    else
+        print("\n[AUTO ENCHANT] Stopped")
+        slotPets = {[1] = nil, [2] = nil, [3] = nil}
+        processedPets = {}
+    end
+end)
+
+-- Initialize
+fetchOwnedPets()
+spawn(function()
+    while true do
+        fetchOwnedPets()
+        PetDropdown:SetValues(uniquePetNames)
+        wait(5)
+    end
+end)
